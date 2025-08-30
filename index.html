@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI Knowledge Hub for Engineering Teams</title>
+  <meta name="description" content="Centralize tribal knowledge from code, tickets, and chats with an AI assistant that answers questions, summarizes meetings, and links pipelines to work items." />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <h1 class="brand">AI Knowledge Hub for Engineering Teams</h1>
+      <nav class="nav">
+        <a href="#overview">Overview</a>
+        <a href="#features">Features</a>
+        <a href="#integrations">Integrations</a>
+        <a href="#tech">Tech</a>
+        <a href="#screens">Screens</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section id="overview" class="section">
+      <div class="container">
+        <article class="project-card">
+          <h2>Project Overview</h2>
+          <p class="lead">
+            A web app that turns scattered team knowledge into answers. Ask natural-language questions
+            (e.g., “how do we deploy staging?”) and get citations from source docs, tickets, and past chats.
+            The assistant summarizes meetings and retros, links pipeline failures to related issues, and builds
+            a living knowledge graph across your projects.
+          </p>
+
+          <div class="pill-bar">
+            <span class="chip">AI Q&amp;A</span>
+            <span class="chip">Semantic Search</span>
+            <span class="chip">Meeting Summaries</span>
+            <span class="chip">Knowledge Graph</span>
+            <span class="chip">Pipeline Insights</span>
+            <span class="chip">RBAC &amp; Audit</span>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section id="features" class="section alt">
+      <div class="container">
+        <h2>Key Features</h2>
+        <ul class="feature-list">
+          <li><strong>Ask &amp; Answer:</strong> Natural-language questions with cited sources.</li>
+          <li><strong>Unified Search:</strong> Code, tickets, docs, and chat history in one place.</li>
+          <li><strong>Auto-Summaries:</strong> Retros, standups, incident reports and PR threads.</li>
+          <li><strong>Knowledge Graph:</strong> Links issues ⇄ commits ⇄ pipelines ⇄ docs.</li>
+          <li><strong>DevOps View:</strong> Build failures paired with related work items &amp; owners.</li>
+          <li><strong>Access Control:</strong> SSO/OAuth2, roles, and detailed audit logs.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section id="integrations" class="section">
+      <div class="container">
+        <h2>Integrations</h2>
+        <div class="stack">
+          <div class="chip">GitLab / GitHub</div>
+          <div class="chip">Jira</div>
+          <div class="chip">Confluence</div>
+          <div class="chip">Slack / Teams</div>
+          <div class="chip">Google Drive</div>
+          <div class="chip">PostgreSQL</div>
+        </div>
+        <p class="muted">Ingests metadata and content via APIs/webhooks and keeps permissions intact.</p>
+      </div>
+    </section>
+
+    <section id="tech" class="section">
+      <div class="container">
+        <h2>Tech Stack</h2>
+        <div class="stack">
+          <div class="chip">React + TypeScript</div>
+          <div class="chip">Spring Boot</div>
+          <div class="chip">PostgreSQL</div>
+          <div class="chip">Vector Search</div>
+          <div class="chip">JWT / OAuth2</div>
+          <div class="chip">Docker • GitLab CI → Jenkins</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="screens" class="section alt">
+      <div class="container">
+        <h2>Screenshots</h2>
+        <div class="screens">
+          <div class="screen-placeholder">Add screenshots or GIFs of Q&amp;A, search, and pipeline linking</div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>© <span id="year"></span> AI Knowledge Hub Project</p>
+    </div>
+  </footer>
+
+  <script>document.getElementById('year').textContent = new Date().getFullYear();</script>
+</body>
+</html>
