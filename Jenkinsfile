@@ -252,6 +252,21 @@ CMD ["nginx", "-g", "daemon off;"]
           script {
             echo "Deploying application to Azure Kubernetes Service"
             
+            // Ensure kubectl is available
+            sh '''
+              # Install kubectl locally in workspace if not available globally
+              if ! command -v kubectl >/dev/null 2>&1; then
+                echo "Installing kubectl locally..."
+                curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+                chmod +x kubectl
+                # Add to PATH for this session
+                export PATH="$PWD:$PATH"
+              fi
+              
+              # Verify kubectl installation
+              kubectl version --client || ./kubectl version --client
+            '''
+            
             // Generate Kubernetes deployment manifests
             def k8sManifests = """
 apiVersion: v1
@@ -341,19 +356,26 @@ spec:
               number: 80
 """
             
-            // Setup kubectl and deploy
+            // Setup Kubernetes environment and deploy
             sh '''
               export KUBECONFIG="${KUBECONFIG_FILE}"
+              export PATH="$PWD:$PATH"
+              
+              # Use kubectl or local kubectl
+              KUBECTL_CMD="kubectl"
+              if ! command -v kubectl >/dev/null 2>&1 && [ -x "./kubectl" ]; then
+                KUBECTL_CMD="./kubectl"
+              fi
               
               # Create namespace if it doesn't exist
-              kubectl get ns "${NAMESPACE}" >/dev/null 2>&1 || kubectl create ns "${NAMESPACE}"
+              $KUBECTL_CMD get ns "${NAMESPACE}" >/dev/null 2>&1 || $KUBECTL_CMD create ns "${NAMESPACE}"
               
               # Create or update container registry secret
-              kubectl -n "${NAMESPACE}" create secret docker-registry acr-auth \
+              $KUBECTL_CMD -n "${NAMESPACE}" create secret docker-registry acr-auth \
                 --docker-server="${ACR_SERVER}" \
                 --docker-username="${ACR_USERNAME}" \
                 --docker-password="${ACR_PASSWORD}" \
-                --dry-run=client -o yaml | kubectl apply -f -
+                --dry-run=client -o yaml | $KUBECTL_CMD apply -f -
             '''
             
             // Write and apply manifests
@@ -362,8 +384,16 @@ spec:
             timeout(time: 10, unit: 'MINUTES') {
               sh '''
                 export KUBECONFIG="${KUBECONFIG_FILE}"
-                kubectl apply -f k8s-deployment.yaml
-                kubectl rollout status deployment/${PROJECT_NAME} -n ${NAMESPACE} --timeout=300s
+                export PATH="$PWD:$PATH"
+                
+                # Use kubectl or local kubectl
+                KUBECTL_CMD="kubectl"
+                if ! command -v kubectl >/dev/null 2>&1 && [ -x "./kubectl" ]; then
+                  KUBECTL_CMD="./kubectl"
+                fi
+                
+                $KUBECTL_CMD apply -f k8s-deployment.yaml
+                $KUBECTL_CMD rollout status deployment/${PROJECT_NAME} -n ${NAMESPACE} --timeout=300s
               '''
             }
           }
@@ -379,10 +409,17 @@ spec:
             
             sh '''
               export KUBECONFIG="${KUBECONFIG_FILE}"
+              export PATH="$PWD:$PATH"
+              
+              # Use kubectl or local kubectl
+              KUBECTL_CMD="kubectl"
+              if ! command -v kubectl >/dev/null 2>&1 && [ -x "./kubectl" ]; then
+                KUBECTL_CMD="./kubectl"
+              fi
               
               # Wait for ingress to be ready and get URL
               for i in {1..20}; do
-                INGRESS_HOST=$(kubectl get ingress ${PROJECT_NAME}-ingress -n ${NAMESPACE} -o jsonpath='{.spec.rules[0].host}' 2>/dev/null || echo "")
+                INGRESS_HOST=$($KUBECTL_CMD get ingress ${PROJECT_NAME}-ingress -n ${NAMESPACE} -o jsonpath='{.spec.rules[0].host}' 2>/dev/null || echo "")
                 if [ -n "$INGRESS_HOST" ] && [ "$INGRESS_HOST" != "null" ]; then
                   LIVE_URL="http://$INGRESS_HOST"
                   echo "✅ Application successfully deployed and accessible at: $LIVE_URL"
@@ -394,7 +431,7 @@ spec:
               
               # Display deployment status
               echo "=== Deployment Summary ==="
-              kubectl get all -n ${NAMESPACE}
+              $KUBECTL_CMD get all -n ${NAMESPACE}
             '''
           }
         }
@@ -422,11 +459,32 @@ spec:
       echo "❌ Deployment failed. Check the logs above for details."
       withCredentials([file(credentialsId: 'kubeconfig-dev', variable: 'KUBECONFIG_FILE')]) {
         sh '''
+          # Ensure kubectl is available for troubleshooting
+          if ! command -v kubectl >/dev/null 2>&1 && [ ! -x "./kubectl" ]; then
+            echo "Installing kubectl for troubleshooting..."
+            curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" || true
+            chmod +x kubectl || true
+          fi
+          
           export KUBECONFIG="${KUBECONFIG_FILE}"
+          export PATH="$PWD:$PATH"
           echo "=== Troubleshooting Information ==="
-          kubectl -n "${NAMESPACE}" describe deployment "${PROJECT_NAME}" || true
-          kubectl -n "${NAMESPACE}" get pods -o wide || true
-          kubectl -n "${NAMESPACE}" get events --sort-by=.lastTimestamp | tail -20 || true
+          
+          # Use kubectl or local kubectl
+          KUBECTL_CMD="kubectl"
+          if ! command -v kubectl >/dev/null 2>&1 && [ -x "./kubectl" ]; then
+            KUBECTL_CMD="./kubectl"
+          fi
+          
+          # Only run kubectl commands if kubectl is available
+          if command -v $KUBECTL_CMD >/dev/null 2>&1 || [ -x "./$KUBECTL_CMD" ]; then
+            $KUBECTL_CMD -n "${NAMESPACE}" describe deployment "${PROJECT_NAME}" || true
+            $KUBECTL_CMD -n "${NAMESPACE}" get pods -o wide || true
+            $KUBECTL_CMD -n "${NAMESPACE}" get events --sort-by=.lastTimestamp | tail -20 || true
+          else
+            echo "kubectl not available for troubleshooting"
+            echo "Please check Jenkins server configuration and ensure kubectl is installed"
+          fi
         '''
       }
     }
