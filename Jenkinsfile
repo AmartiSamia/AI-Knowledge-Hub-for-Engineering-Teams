@@ -10,10 +10,6 @@
  * - Azure Container Registry integration for image storage
  * - Azure Kubernetes Service deployment with ingress configuration
  * - Simplified configuration with essential parameters only
- * 
- * @author ScrumOps DevOps Team
- * @version 2.0
- * @since 2024
  */
 pipeline {
   agent any
@@ -21,7 +17,7 @@ pipeline {
   options {
     disableConcurrentBuilds() // Prevent concurrent builds of the same job
     timestamps() // Add timestamps to console output
-    buildDiscarder(logRotator(numToKeepStr: '10')) // Keep only last 10 builds
+    buildDiscarder(logRotator(numToKeepStr: '30')) // Keep only last 30 builds
   }
 
   parameters {
@@ -128,12 +124,25 @@ pipeline {
             
             switch(env.PROJECT_TYPE) {
               case 'nodejs':
+                // NOTE: Use npm ci if package-lock.json exists; otherwise fallback to npm install
                 dockerfileContent = '''
 FROM node:18-alpine
 WORKDIR /app
+
+# Copy package manifests first for better layer caching
 COPY package*.json ./
-RUN npm ci --only=production
+
+# If a lockfile exists, prefer a clean, reproducible install.
+# Otherwise, do a regular install (use --omit=dev to mirror previous --only=production).
+RUN if [ -f package-lock.json ]; then \
+      npm ci --omit=dev; \
+    else \
+      npm install --omit=dev; \
+    fi
+
+# Copy the rest of the source
 COPY . .
+
 EXPOSE 3000
 CMD ["npm", "start"]
 '''
@@ -190,11 +199,8 @@ CMD ["nginx", "-g", "daemon off;"]
               break
               
             case 'nodejs':
-              echo "Installing dependencies and building Node.js project"
-              sh '''
-                npm ci
-                npm run build || echo "No build script found, proceeding with source files"
-              '''
+              // No npm on agent; installs happen in Dockerfile
+              echo "Skipping Node.js prebuild; handled inside Docker image"
               break
               
             default:
@@ -451,12 +457,12 @@ spec:
     }
     
     success {
-      echo "🎉 Deployment completed successfully!"
+      echo " Deployment completed successfully!"
       echo "Your application is now running on Azure Kubernetes Service."
     }
     
     failure {
-      echo "❌ Deployment failed. Check the logs above for details."
+      echo " Deployment failed. Check the logs above for details."
       withCredentials([file(credentialsId: 'kubeconfig-dev', variable: 'KUBECONFIG_FILE')]) {
         sh '''
           # Ensure kubectl is available for troubleshooting
