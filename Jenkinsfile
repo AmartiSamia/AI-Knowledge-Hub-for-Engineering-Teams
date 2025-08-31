@@ -1,123 +1,88 @@
+/**
+ * ScrumOps CI/CD Pipeline
+ * 
+ * Simplified Jenkins pipeline for automated application deployment to Azure Kubernetes Service.
+ * This pipeline handles source code checkout, containerization, and deployment with minimal overhead.
+ * 
+ * Key Features:
+ * - Automatic project type detection (Node.js, Maven, Python, Static)
+ * - Dynamic Dockerfile generation for containerization
+ * - Azure Container Registry integration for image storage
+ * - Azure Kubernetes Service deployment with ingress configuration
+ * - Simplified configuration with essential parameters only
+ * 
+ * @author ScrumOps DevOps Team
+ * @version 2.0
+ * @since 2024
+ */
 pipeline {
   agent any
 
-  // Auto build on push + poll every minute
-  triggers {
-    githubPush()
-    pollSCM('H/1 * * * *') // every minute (hashed per job to avoid thundering herd)
-  }
-
   options {
-    disableConcurrentBuilds()
-    timestamps()
-    buildDiscarder(logRotator(numToKeepStr: '30'))
-    durabilityHint('MAX_SURVIVABILITY')
+    disableConcurrentBuilds() // Prevent concurrent builds of the same job
+    timestamps() // Add timestamps to console output
+    buildDiscarder(logRotator(numToKeepStr: '10')) // Keep only last 10 builds
   }
 
   parameters {
-    string(name: 'GITHUB_URL',   defaultValue: '', description: 'GitHub repo URL (https://github.com/you/repo)')
-    string(name: 'PROJECT_NAME', defaultValue: '', description: 'Project slug (ACR repo + K8s app name)')
-    string(name: 'DEPLOYMENT_ID', defaultValue: '', description: 'Optional deployment ID for callbacks')
-    string(name: 'LB_RG', defaultValue: 'MC_devops-monitoring-rg_devops-aks_eastus', description: 'AKS managed RG for Azure LB annotation')
-    string(name: 'LB_IP', defaultValue: '', description: 'Optional static public IP')
+    string(name: 'GITHUB_URL', defaultValue: '', description: 'GitHub repository URL')
+    string(name: 'PROJECT_NAME', defaultValue: '', description: 'Project name for deployment')
+    string(name: 'IMAGE_NAME', defaultValue: '', description: 'Custom Docker image name (optional)')
+    string(name: 'BRANCH', defaultValue: 'main', description: 'Git branch to deploy')
   }
 
   environment {
-    // EDIT ONLY IF YOUR ACR SERVER CHANGES
-    ACR_SERVER   = 'devopsmonitoracrrt2y5a.azurecr.io'
-
-    // Will be (re)set in the auto-fill step
+    // Azure Container Registry configuration
+    ACR_SERVER = 'devopsmonitoracrrt2y5a.azurecr.io'
+    
+    // Dynamic environment variables set during pipeline execution
     PROJECT_NAME = "${params.PROJECT_NAME}"
-    GITHUB_URL   = "${params.GITHUB_URL}"
-    IMAGE_TAG    = "${BUILD_NUMBER}"
-    NAMESPACE    = "${params.PROJECT_NAME}-dev"
-
-    // ScrumOps backend for callbacks - Jenkins should be able to reach this
-    BACKEND_BASE = 'http://20.246.34.90:8081'
+    GITHUB_URL = "${params.GITHUB_URL}"
+    IMAGE_TAG = "${BUILD_NUMBER}"
+    NAMESPACE = "${params.PROJECT_NAME}-dev"
   }
 
   stages {
-
-    stage('Auto-fill parameters (webhook runs)') {
-      steps {
-        script {
-          // Discover Git URL from Jenkins env or local repo (when available)
-          def discoveredGit = env.GIT_URL
-          if (!discoveredGit?.trim()) {
-            try {
-              discoveredGit = sh(script: 'git config --get remote.origin.url', returnStdout: true).trim()
-            } catch (ignored) { /* first run may not have .git yet */ }
-          }
-
-          // If param empty, use discovered one
-          env.GITHUB_URL = (params.GITHUB_URL?.trim()) ? params.GITHUB_URL.trim() : (discoveredGit ?: '')
-
-          // Derive project name if missing (repo name or job base name)
-          def derivedName = env.JOB_BASE_NAME
-          if (env.GITHUB_URL?.trim()) {
-            def bits = env.GITHUB_URL.split('/')
-            derivedName = bits ? bits[-1].replaceAll(/\.git$/, '') : derivedName
-          }
-          env.PROJECT_NAME = (params.PROJECT_NAME?.trim()) ?: (derivedName ?: '')
-          env.NAMESPACE    = env.PROJECT_NAME ? "${env.PROJECT_NAME}-dev" : "unknown-dev"
-        }
-      }
-    }
-
     stage('Validate Parameters') {
       steps {
-        echo "Validating parameters"
         script {
-          if (!env.GITHUB_URL?.trim()) {
-            error('GITHUB_URL is required and could not be auto-detected. Set it in the job or ensure the repo remote is available.')
+          // Validate required parameters
+          if (!params.GITHUB_URL?.trim()) {
+            error('GitHub URL is required for deployment')
           }
-          if (!env.PROJECT_NAME?.trim()) {
-            error('PROJECT_NAME is required and could not be inferred (e.g., from repo name or JOB_BASE_NAME).')
+          if (!params.PROJECT_NAME?.trim()) {
+            error('Project name is required for deployment')
           }
-
-          if (params.DEPLOYMENT_ID?.trim()) {
-            sh """curl -s -X POST "${BACKEND_BASE}/api/devops/internal/stages" \
-                 -H "Content-Type: application/json" \
-                 -d '{"deployment_id":"${params.DEPLOYMENT_ID}","stage_name":"validate","status":"success"}' || true"""
-          }
+          
+          echo "Starting deployment for project: ${params.PROJECT_NAME}"
+          echo "Source repository: ${params.GITHUB_URL}"
+          echo "Target branch: ${params.BRANCH}"
         }
       }
     }
 
-    stage('Checkout') {
+    stage('Checkout Source Code') {
       steps {
-        script {
-          if (params.DEPLOYMENT_ID?.trim()) {
-            sh """curl -s -X POST "${BACKEND_BASE}/api/devops/internal/stages" \
-                 -H "Content-Type: application/json" \
-                 -d '{"deployment_id":"${params.DEPLOYMENT_ID}","stage_name":"checkout","status":"running"}' || true"""
-          }
-        }
-
-        echo "Cloning repository: ${env.GITHUB_URL}"
-        deleteDir()
-
+        echo "Checking out source code from: ${params.GITHUB_URL}"
+        deleteDir() // Clean workspace before checkout
+        
         script {
           try {
-            git branch: 'main', url: env.GITHUB_URL
+            // Attempt to checkout specified branch
+            git branch: params.BRANCH, url: params.GITHUB_URL
           } catch (err) {
-            echo "Branch 'main' not found, trying 'master'"
+            echo "Branch '${params.BRANCH}' not found, trying 'main'"
             try {
-              git branch: 'master', url: env.GITHUB_URL
+              git branch: 'main', url: params.GITHUB_URL
             } catch (err2) {
-              echo "Branch 'master' not found, trying 'develop'"
-              git branch: 'develop', url: env.GITHUB_URL
+              echo "Branch 'main' not found, trying 'master'"
+              git branch: 'master', url: params.GITHUB_URL
             }
           }
-
+          
+          // Capture git metadata for deployment tracking
           env.GIT_COMMIT_HASH = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
-          env.GIT_AUTHOR      = sh(script: 'git log -1 --pretty=%an',    returnStdout: true).trim()
-
-          if (params.DEPLOYMENT_ID?.trim()) {
-            sh """curl -s -X POST "${BACKEND_BASE}/api/devops/internal/stages" \
-                 -H "Content-Type: application/json" \
-                 -d '{"deployment_id":"${params.DEPLOYMENT_ID}","stage_name":"checkout","status":"success"}' || true"""
-          }
+          echo "Checked out commit: ${env.GIT_COMMIT_HASH}"
         }
       }
     }
@@ -125,200 +90,170 @@ pipeline {
     stage('Detect Project Type') {
       steps {
         script {
-          if (params.DEPLOYMENT_ID?.trim()) {
-            sh """curl -s -X POST "${BACKEND_BASE}/api/devops/internal/stages" \
-                 -H "Content-Type: application/json" \
-                 -d '{"deployment_id":"${params.DEPLOYMENT_ID}","stage_name":"analyze","status":"running"}' || true"""
-          }
-
-          sh 'echo "Repository file listing:" && ls -la'
-
+          echo "Analyzing project structure for deployment configuration"
+          
+          // Detect project type based on configuration files
           if (fileExists('package.json')) {
             env.PROJECT_TYPE = 'nodejs'
             env.PORT = '3000'
-            echo "Detected project type: Node.js"
+            echo "Detected Node.js project"
           } else if (fileExists('pom.xml')) {
             env.PROJECT_TYPE = 'maven'
             env.PORT = '8080'
-            echo "Detected project type: Maven (Spring Boot)"
+            echo "Detected Maven Spring Boot project"
           } else if (fileExists('requirements.txt')) {
             env.PROJECT_TYPE = 'python'
             env.PORT = '8000'
-            echo "Detected project type: Python"
+            echo "Detected Python project"
           } else if (fileExists('index.html')) {
             env.PROJECT_TYPE = 'static'
             env.PORT = '80'
-            echo "Detected project type: Static"
+            echo "Detected static website project"
           } else {
             env.PROJECT_TYPE = 'static'
             env.PORT = '80'
-            echo "Project type unknown; defaulting to Static"
-          }
-
-          if (params.DEPLOYMENT_ID?.trim()) {
-            sh """curl -s -X POST "${BACKEND_BASE}/api/devops/internal/stages" \
-                 -H "Content-Type: application/json" \
-                 -d '{"deployment_id":"${params.DEPLOYMENT_ID}","stage_name":"analyze","status":"success"}' || true"""
+            echo "Project type unknown, defaulting to static hosting"
           }
         }
       }
     }
 
-    stage('Generate Dockerfile') {
+    stage('Prepare Container Configuration') {
       steps {
         script {
-          if (params.DEPLOYMENT_ID?.trim()) {
-            sh """curl -s -X POST "${BACKEND_BASE}/api/devops/internal/stages" \
-                 -H "Content-Type: application/json" \
-                 -d '{"deployment_id":"${params.DEPLOYMENT_ID}","stage_name":"prepare","status":"running"}' || true"""
-          }
-
           if (!fileExists('Dockerfile')) {
-            echo "Creating Dockerfile for ${env.PROJECT_TYPE}"
-            def df = ''
-            if (env.PROJECT_TYPE == 'nodejs') {
-              df = '''FROM node:18-alpine
+            echo "Generating optimized Dockerfile for ${env.PROJECT_TYPE} project"
+            
+            def dockerfileContent = ''
+            
+            switch(env.PROJECT_TYPE) {
+              case 'nodejs':
+                dockerfileContent = '''
+FROM node:18-alpine
 WORKDIR /app
 COPY package*.json ./
-RUN npm install --production || npm install
+RUN npm ci --only=production
 COPY . .
 EXPOSE 3000
-CMD ["npm","start"]'''
-            } else if (env.PROJECT_TYPE == 'maven') {
-              df = '''FROM openjdk:17-jdk-slim
+CMD ["npm", "start"]
+'''
+                break
+                
+              case 'maven':
+                dockerfileContent = '''
+FROM openjdk:17-jdk-slim
 WORKDIR /app
 COPY target/*.jar app.jar
 EXPOSE 8080
-CMD ["java","-jar","app.jar"]'''
-            } else if (env.PROJECT_TYPE == 'python') {
-              df = '''FROM python:3.11-slim
+CMD ["java", "-jar", "app.jar"]
+'''
+                break
+                
+              case 'python':
+                dockerfileContent = '''
+FROM python:3.11-slim
 WORKDIR /app
-COPY requirements.txt* ./
-RUN pip install -r requirements.txt
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 EXPOSE 8000
-CMD ["python","app.py"]'''
-            } else {
-              df = '''FROM nginx:alpine
+CMD ["python", "app.py"]
+'''
+                break
+                
+              default: // static
+                dockerfileContent = '''
+FROM nginx:alpine
 COPY . /usr/share/nginx/html/
 EXPOSE 80
-CMD ["nginx","-g","daemon off;"]'''
+CMD ["nginx", "-g", "daemon off;"]
+'''
             }
-            writeFile file: 'Dockerfile', text: df
+            
+            writeFile file: 'Dockerfile', text: dockerfileContent
+            echo "Generated Dockerfile for containerization"
           } else {
-            echo 'Using existing Dockerfile'
-          }
-
-          sh 'echo "---- Dockerfile ----"; cat Dockerfile; echo "-------------------"'
-
-          if (params.DEPLOYMENT_ID?.trim()) {
-            sh """curl -s -X POST "${BACKEND_BASE}/api/devops/internal/stages" \
-                 -H "Content-Type: application/json" \
-                 -d '{"deployment_id":"${params.DEPLOYMENT_ID}","stage_name":"prepare","status":"success"}' || true"""
+            echo "Using existing Dockerfile from repository"
           }
         }
       }
     }
 
-    stage('Build Image') {
+    stage('Build Application') {
       steps {
         script {
-          if (params.DEPLOYMENT_ID?.trim()) {
-            sh """curl -s -X POST "${BACKEND_BASE}/api/devops/internal/stages" \
-                 -H "Content-Type: application/json" \
-                 -d '{"deployment_id":"${params.DEPLOYMENT_ID}","stage_name":"build","status":"running"}' || true"""
-          }
-        }
-
-        script {
-          // Compile/build application if needed (before Docker build)
-          if (env.PROJECT_TYPE == 'maven') {
-            echo "Building Maven project (tests skipped)"
-            sh 'mvn clean package -DskipTests'
-          } else if (env.PROJECT_TYPE == 'nodejs') {
-            echo "Building Node.js project"
-            sh 'npm run build || echo "No build script found; proceeding"'
-          }
-        }
-
-        sh """
-          docker build -t ${ACR_SERVER}/${PROJECT_NAME}:${IMAGE_TAG} .
-          docker tag   ${ACR_SERVER}/${PROJECT_NAME}:${IMAGE_TAG} ${ACR_SERVER}/${PROJECT_NAME}:latest
-        """
-
-        script {
-          if (params.DEPLOYMENT_ID?.trim()) {
-            sh """curl -s -X POST "${BACKEND_BASE}/api/devops/internal/stages" \
-                 -H "Content-Type: application/json" \
-                 -d '{"deployment_id":"${params.DEPLOYMENT_ID}","stage_name":"build","status":"success"}' || true"""
+          // Build application based on project type before containerization
+          switch(env.PROJECT_TYPE) {
+            case 'maven':
+              echo "Building Maven project"
+              sh 'mvn clean package -DskipTests'
+              break
+              
+            case 'nodejs':
+              echo "Installing dependencies and building Node.js project"
+              sh '''
+                npm ci
+                npm run build || echo "No build script found, proceeding with source files"
+              '''
+              break
+              
+            default:
+              echo "No build step required for ${env.PROJECT_TYPE} project"
           }
         }
       }
     }
 
-    stage('Push to ACR') {
+    stage('Build Container Image') {
       steps {
         script {
-          if (params.DEPLOYMENT_ID?.trim()) {
-            sh """curl -s -X POST "${BACKEND_BASE}/api/devops/internal/stages" \
-                 -H "Content-Type: application/json" \
-                 -d '{"deployment_id":"${params.DEPLOYMENT_ID}","stage_name":"push","status":"running"}' || true"""
-          }
+          // Use custom image name if provided, otherwise use project name
+          def imageName = params.IMAGE_NAME?.trim() ? params.IMAGE_NAME : params.PROJECT_NAME
+          def fullImageName = "${env.ACR_SERVER}/${imageName}:${env.IMAGE_TAG}"
+          
+          echo "Building container image: ${fullImageName}"
+          
+          sh """
+            docker build -t ${fullImageName} .
+            docker tag ${fullImageName} ${env.ACR_SERVER}/${imageName}:latest
+          """
+          
+          // Store image name for later stages
+          env.FULL_IMAGE_NAME = fullImageName
+          env.IMAGE_NAME_USED = imageName
         }
+      }
+    }
 
+    stage('Push to Container Registry') {
+      steps {
         withCredentials([usernamePassword(credentialsId: 'acr-credentials',
                                           usernameVariable: 'ACR_USERNAME',
                                           passwordVariable: 'ACR_PASSWORD')]) {
-          sh """
-            echo "${ACR_PASSWORD}" | docker login "${ACR_SERVER}" -u "${ACR_USERNAME}" --password-stdin
-            docker push ${ACR_SERVER}/${PROJECT_NAME}:${IMAGE_TAG}
-            docker push ${ACR_SERVER}/${PROJECT_NAME}:latest
-          """
-        }
-
-        script {
-          if (params.DEPLOYMENT_ID?.trim()) {
-            sh """curl -s -X POST "${BACKEND_BASE}/api/devops/internal/stages" \
-                 -H "Content-Type: application/json" \
-                 -d '{"deployment_id":"${params.DEPLOYMENT_ID}","stage_name":"push","status":"success"}' || true"""
+          script {
+            echo "Pushing container image to Azure Container Registry"
+            
+            sh """
+              echo "${ACR_PASSWORD}" | docker login "${ACR_SERVER}" -u "${ACR_USERNAME}" --password-stdin
+              docker push ${env.FULL_IMAGE_NAME}
+              docker push ${env.ACR_SERVER}/${env.IMAGE_NAME_USED}:latest
+            """
           }
         }
       }
     }
 
-    stage('Setup kubectl (if needed)') {
-      steps {
-        withCredentials([file(credentialsId: 'kubeconfig-dev', variable: 'KUBECONFIG_FILE')]) {
-          sh '''
-            set -e
-            if ! command -v kubectl >/dev/null 2>&1 && [ ! -x "./kubectl" ]; then
-              echo "Installing kubectl locally"
-              VER=$(curl -fsSL https://dl.k8s.io/release/stable.txt)
-              curl -fsSL -o kubectl "https://dl.k8s.io/release/${VER}/bin/linux/amd64/kubectl"
-              chmod +x kubectl
-            fi
-            export PATH="$PWD:$PATH"
-            export KUBECONFIG="${KUBECONFIG_FILE}"
-            kubectl version --client
-          '''
-        }
-      }
-    }
-
-    stage('Deploy to AKS (Rolling)') {
+    stage('Deploy to Kubernetes') {
       steps {
         withCredentials([
           file(credentialsId: 'kubeconfig-dev', variable: 'KUBECONFIG_FILE'),
           usernamePassword(credentialsId: 'acr-credentials', usernameVariable: 'ACR_USERNAME', passwordVariable: 'ACR_PASSWORD')
         ]) {
           script {
-            if (params.DEPLOYMENT_ID?.trim()) {
-              sh """curl -s -X POST "${BACKEND_BASE}/api/devops/internal/stages" \
-                   -H "Content-Type: application/json" \
-                   -d '{"deployment_id":"${params.DEPLOYMENT_ID}","stage_name":"deploy","status":"running"}' || true"""
-            }
-
-            String k8sYaml = """
+            echo "Deploying application to Azure Kubernetes Service"
+            
+            // Generate Kubernetes deployment manifests
+            def k8sManifests = """
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -348,17 +283,15 @@ spec:
       - name: acr-auth
       containers:
       - name: ${env.PROJECT_NAME}
-        image: ${env.ACR_SERVER}/${env.PROJECT_NAME}:${env.IMAGE_TAG}
-        imagePullPolicy: IfNotPresent
+        image: ${env.FULL_IMAGE_NAME}
         ports:
         - containerPort: ${env.PORT}
         readinessProbe:
           httpGet:
             path: /
             port: ${env.PORT}
-          initialDelaySeconds: 5
+          initialDelaySeconds: 10
           periodSeconds: 5
-          failureThreshold: 3
         livenessProbe:
           httpGet:
             path: /
@@ -406,96 +339,63 @@ spec:
             name: ${env.PROJECT_NAME}-service
             port:
               number: 80
-""".stripIndent()
-
+"""
+            
+            // Setup kubectl and deploy
             sh '''
-              set -e
-              export PATH="$PWD:$PATH"
               export KUBECONFIG="${KUBECONFIG_FILE}"
-
-              # Namespace and image pull secret
+              
+              # Create namespace if it doesn't exist
               kubectl get ns "${NAMESPACE}" >/dev/null 2>&1 || kubectl create ns "${NAMESPACE}"
-
+              
+              # Create or update container registry secret
               kubectl -n "${NAMESPACE}" create secret docker-registry acr-auth \
                 --docker-server="${ACR_SERVER}" \
                 --docker-username="${ACR_USERNAME}" \
                 --docker-password="${ACR_PASSWORD}" \
                 --dry-run=client -o yaml | kubectl apply -f -
             '''
-
-            writeFile file: 'k8s.yaml', text: k8sYaml
-
-            timeout(time: 15, unit: 'MINUTES') {
-              retry(2) {
-                sh 'export PATH="$PWD:$PATH"; export KUBECONFIG="${KUBECONFIG_FILE}"; kubectl apply -f k8s.yaml'
-              }
-            }
-
+            
+            // Write and apply manifests
+            writeFile file: 'k8s-deployment.yaml', text: k8sManifests
+            
             timeout(time: 10, unit: 'MINUTES') {
-              retry(1) {
-                sh 'export PATH="$PWD:$PATH"; export KUBECONFIG="${KUBECONFIG_FILE}"; kubectl rollout status deployment/${PROJECT_NAME} -n ${NAMESPACE} --timeout=300s'
-              }
-            }
-
-            if (params.DEPLOYMENT_ID?.trim()) {
-              sh """curl -s -X POST "${BACKEND_BASE}/api/devops/internal/stages" \
-                   -H "Content-Type: application/json" \
-                   -d '{"deployment_id":"${params.DEPLOYMENT_ID}","stage_name":"deploy","status":"success"}' || true"""
+              sh '''
+                export KUBECONFIG="${KUBECONFIG_FILE}"
+                kubectl apply -f k8s-deployment.yaml
+                kubectl rollout status deployment/${PROJECT_NAME} -n ${NAMESPACE} --timeout=300s
+              '''
             }
           }
         }
       }
     }
 
-    stage('Get External URL') {
+    stage('Verify Deployment') {
       steps {
         withCredentials([file(credentialsId: 'kubeconfig-dev', variable: 'KUBECONFIG_FILE')]) {
           script {
-            if (params.DEPLOYMENT_ID?.trim()) {
-              sh """curl -s -X POST "${BACKEND_BASE}/api/devops/internal/stages" \
-                   -H "Content-Type: application/json" \
-                   -d '{"deployment_id":"${params.DEPLOYMENT_ID}","stage_name":"health-check","status":"running"}' || true"""
-            }
-          }
-
-          sh '''
-            set -e
-            export PATH="$PWD:$PATH"
-            export KUBECONFIG="${KUBECONFIG_FILE}"
-
-            # Prefer Ingress host as the live URL
-            for i in {1..30}; do
-              INGRESS_HOST=$(kubectl get ingress ${PROJECT_NAME}-ingress -n ${NAMESPACE} -o jsonpath='{.spec.rules[0].host}' 2>/dev/null || echo "")
-              if [ -n "$INGRESS_HOST" ] && [ "$INGRESS_HOST" != "null" ]; then
-                LIVE_URL="http://$INGRESS_HOST"
-                echo "Application URL: $LIVE_URL"
-
-                # Update ScrumOps
-                curl -s -X POST "${BACKEND_BASE}/api/devops/internal/projects/${PROJECT_NAME}/url" \
-                     -H "Content-Type: application/json" \
-                     -d "{\"external_url\":\"$LIVE_URL\"}" || true
-
-                if [ -n "${DEPLOYMENT_ID}" ]; then
-                  curl -s -X POST "${BACKEND_BASE}/api/devops/internal/deployments/${DEPLOYMENT_ID}/url" \
-                       -H "Content-Type: application/json" \
-                       -d "{\"external_url\":\"$LIVE_URL\"}" || true
+            echo "Verifying deployment and generating access URL"
+            
+            sh '''
+              export KUBECONFIG="${KUBECONFIG_FILE}"
+              
+              # Wait for ingress to be ready and get URL
+              for i in {1..20}; do
+                INGRESS_HOST=$(kubectl get ingress ${PROJECT_NAME}-ingress -n ${NAMESPACE} -o jsonpath='{.spec.rules[0].host}' 2>/dev/null || echo "")
+                if [ -n "$INGRESS_HOST" ] && [ "$INGRESS_HOST" != "null" ]; then
+                  LIVE_URL="http://$INGRESS_HOST"
+                  echo "✅ Application successfully deployed and accessible at: $LIVE_URL"
+                  break
                 fi
-                break
-              fi
-              echo "Waiting for ingress to be ready (${i}/30)"
-              sleep 10
-            done
-
-            echo "Kubernetes resources (namespace: ${NAMESPACE})"
-            kubectl get all -n ${NAMESPACE}
-          '''
-
-          script {
-            if (params.DEPLOYMENT_ID?.trim()) {
-              sh """curl -s -X POST "${BACKEND_BASE}/api/devops/internal/stages" \
-                   -H "Content-Type: application/json" \
-                   -d '{"deployment_id":"${params.DEPLOYMENT_ID}","stage_name":"health-check","status":"success"}' || true"""
-            }
+                echo "Waiting for ingress configuration (${i}/20)..."
+                sleep 10
+              done
+              
+              # Display deployment status
+              echo "=== Deployment Summary ==="
+              kubectl get all -n ${NAMESPACE}
+            '''
           }
         }
       }
@@ -504,43 +404,31 @@ spec:
 
   post {
     always {
-      // Cleanup local images to save space (ignore errors)
-      sh 'docker rmi ${ACR_SERVER}/${PROJECT_NAME}:${IMAGE_TAG} 2>/dev/null || true'
-      sh 'docker rmi ${ACR_SERVER}/${PROJECT_NAME}:latest 2>/dev/null || true'
-    }
-    success {
+      // Clean up local Docker images to save disk space
       script {
-        if (params.DEPLOYMENT_ID?.trim()) {
-          sh """curl -s -X POST "${BACKEND_BASE}/api/devops/internal/deployments/${params.DEPLOYMENT_ID}/status" \
-               -H "Content-Type: application/json" \
-               -d '{"status":"success"}' || true"""
+        if (env.FULL_IMAGE_NAME) {
+          sh "docker rmi ${env.FULL_IMAGE_NAME} 2>/dev/null || true"
+          sh "docker rmi ${env.ACR_SERVER}/${env.IMAGE_NAME_USED}:latest 2>/dev/null || true"
         }
       }
-      echo "Deployment completed successfully. Check ScrumOps dashboard for the live URL."
     }
+    
+    success {
+      echo "🎉 Deployment completed successfully!"
+      echo "Your application is now running on Azure Kubernetes Service."
+    }
+    
     failure {
+      echo "❌ Deployment failed. Check the logs above for details."
       withCredentials([file(credentialsId: 'kubeconfig-dev', variable: 'KUBECONFIG_FILE')]) {
         sh '''
-          export PATH="$PWD:$PATH"
           export KUBECONFIG="${KUBECONFIG_FILE}"
-          NS="${NAMESPACE:-unknown-dev}"
-          APP="${PROJECT_NAME:-unknown}"
-          echo "Describe deployment:"
-          kubectl -n "$NS" describe deploy/"$APP" || true
-          echo "Recent events:"
-          kubectl -n "$NS" get events --sort-by=.lastTimestamp | tail -n 50 || true
-          echo "Pods:"
-          kubectl -n "$NS" get pods -o wide || true
+          echo "=== Troubleshooting Information ==="
+          kubectl -n "${NAMESPACE}" describe deployment "${PROJECT_NAME}" || true
+          kubectl -n "${NAMESPACE}" get pods -o wide || true
+          kubectl -n "${NAMESPACE}" get events --sort-by=.lastTimestamp | tail -20 || true
         '''
       }
-      script {
-        if (params.DEPLOYMENT_ID?.trim()) {
-          sh """curl -s -X POST "${BACKEND_BASE}/api/devops/internal/deployments/${params.DEPLOYMENT_ID}/status" \
-               -H "Content-Type: application/json" \
-               -d '{"status":"failed"}' || true"""
-        }
-      }
-      echo "Deployment failed. Review Jenkins logs and the ScrumOps dashboard for details."
     }
   }
 }
